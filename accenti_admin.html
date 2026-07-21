@@ -94,6 +94,25 @@
   .modal-actions{display:flex;gap:10px;margin-top:22px;}
   .current-img{width:56px;height:56px;border-radius:8px;object-fit:cover;margin-top:8px;border:1px solid var(--line);}
 
+  /* importador */
+  .import-zone{
+    border:2px dashed var(--line);border-radius:12px;padding:28px;text-align:center;
+    cursor:pointer;transition:.15s ease;margin-bottom:16px;
+  }
+  .import-zone:hover{border-color:var(--pine);background:var(--pine-soft);}
+  .import-zone input{display:none;}
+  .import-zone .icon{font-size:28px;margin-bottom:8px;}
+  .import-zone p{margin:0;color:var(--ink-soft);font-size:13.5px;}
+  .import-zone b{color:var(--ink);}
+  .import-preview{max-height:260px;overflow-y:auto;margin-bottom:16px;}
+  .import-table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  .import-table th{background:var(--pine-soft);padding:6px 10px;text-align:left;font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.3px;text-transform:uppercase;color:var(--pine);}
+  .import-table td{padding:6px 10px;border-bottom:1px solid var(--line);}
+  .import-table tr.error td{background:#fef0f0;color:var(--danger);}
+  .import-info{font-size:13px;color:var(--ink-soft);margin-bottom:14px;}
+  .import-info b{color:var(--ink);}
+  .plantilla-link{font-size:12.5px;color:var(--pine);text-decoration:underline;cursor:pointer;margin-top:8px;display:inline-block;}
+
   #toast{
     position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
     background:var(--ink);color:#fff;padding:11px 20px;border-radius:10px;font-size:13.5px;
@@ -123,6 +142,7 @@
     </div>
     <div class="topbar-actions">
       <button class="btn btn-outline" onclick="abrirModal()">+ Agregar producto</button>
+      <button class="btn btn-outline" onclick="abrirImportador()">↑ Importar CSV</button>
       <button class="btn btn-outline" onclick="logout()">Cerrar sesión</button>
     </div>
   </div>
@@ -178,6 +198,34 @@
     <div class="modal-actions">
       <button class="btn" style="flex:1" onclick="guardarProducto()">Guardar</button>
       <button class="btn btn-outline" onclick="cerrarModal()">Cancelar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal importador CSV -->
+<div class="overlay" id="overlayImport">
+  <div class="modal" style="max-width:600px;">
+    <h2>Importar productos desde CSV</h2>
+    <p class="sub" style="margin-bottom:16px;">Las columnas requeridas son <b>nombre</b>, <b>categoria</b> y <b>subcategoria</b>. El resto es opcional.</p>
+
+    <div class="import-zone" id="importZone" onclick="document.getElementById('csvInput').click()">
+      <div class="icon">📄</div>
+      <p><b>Hacé click para elegir un archivo</b><br>o arrastrá un CSV acá</p>
+      <input type="file" id="csvInput" accept=".csv" onchange="leerCSV(this)">
+    </div>
+
+    <span class="plantilla-link" onclick="descargarPlantilla()">⬇ Descargar plantilla de ejemplo</span>
+
+    <div id="importPreview" style="display:none;margin-top:16px;">
+      <div class="import-info" id="importInfo"></div>
+      <div class="import-preview">
+        <table class="import-table" id="importTable"></table>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn" style="flex:1" id="btnConfirmarImport" onclick="confirmarImport()" disabled>Importar productos</button>
+      <button class="btn btn-outline" onclick="cerrarImportador()">Cancelar</button>
     </div>
   </div>
 </div>
@@ -373,6 +421,106 @@ async function borrarProducto(id){
   const { error } = await sb.from('productos').delete().eq('id', id);
   if(error){ toast('No se pudo borrar'); console.error(error); return; }
   toast('Producto borrado');
+  cargarProductos();
+}
+
+// ---------- IMPORTADOR CSV ----------
+let filasParaImportar = [];
+
+const CATS_VALIDAS = {
+  "Ropa de cama": ["Sábanas","Frazadas","Fundas nórdicas","Acolchados","Accesorios"],
+  "Baño": ["Juegos de toallas","Alfombritas","Cortinas de baño"]
+};
+
+function abrirImportador(){
+  filasParaImportar = [];
+  document.getElementById('csvInput').value = '';
+  document.getElementById('importPreview').style.display = 'none';
+  document.getElementById('btnConfirmarImport').disabled = true;
+  document.getElementById('overlayImport').classList.add('show');
+}
+function cerrarImportador(){
+  document.getElementById('overlayImport').classList.remove('show');
+}
+
+function descargarPlantilla(){
+  const contenido = `nombre,categoria,subcategoria,descripcion,precio\nSábana lisa 200 hilos,Ropa de cama,Sábanas,Algodón percal disponible en blanco y crema,18500\nJuego de toallas 3 piezas,Baño,Juegos de toallas,,32000\nAlmohada viscoelástica,Ropa de cama,Accesorios,Espuma con memoria funda lavable,`;
+  const blob = new Blob([contenido], {type:'text/csv;charset=utf-8;'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'plantilla_accenti.csv';
+  a.click();
+}
+
+function leerCSV(input){
+  const file = input.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const texto = e.target.result;
+    const sep = texto.includes(';') ? ';' : ',';
+    const lineas = texto.trim().split('\n').map(l=>l.trim()).filter(Boolean);
+    if(lineas.length < 2){ toast('El archivo está vacío o no tiene datos'); return; }
+
+    const headers = lineas[0].split(sep).map(h=>h.trim().toLowerCase().replace(/"/g,''));
+    const rows = lineas.slice(1).map(l=>{
+      const vals = l.split(sep).map(v=>v.trim().replace(/^"|"$/g,''));
+      const obj = {};
+      headers.forEach((h,i)=>obj[h]=vals[i]||'');
+      return obj;
+    });
+
+    filasParaImportar = [];
+    let html = '<thead><tr><th>#</th><th>Nombre</th><th>Categoría</th><th>Subcategoría</th><th>Precio</th><th>Estado</th></tr></thead><tbody>';
+    let validos = 0, errores = 0;
+
+    rows.forEach((r,i)=>{
+      const nombre = r['nombre']||r['name']||'';
+      const categoria = r['categoria']||r['category']||'';
+      const subcategoria = r['subcategoria']||r['subcategory']||'';
+      const descripcion = r['descripcion']||r['description']||'';
+      const precio = r['precio']||r['price']||'';
+
+      let error = '';
+      if(!nombre) error = 'Falta nombre';
+      else if(!CATS_VALIDAS[categoria]) error = `Categoría inválida: "${categoria}"`;
+      else if(!CATS_VALIDAS[categoria].includes(subcategoria)) error = `Subcategoría inválida: "${subcategoria}"`;
+
+      if(error){
+        errores++;
+        html += `<tr class="error"><td>${i+1}</td><td>${esc(nombre)||'—'}</td><td>${esc(categoria)}</td><td>${esc(subcategoria)}</td><td>—</td><td>⚠ ${esc(error)}</td></tr>`;
+      } else {
+        validos++;
+        filasParaImportar.push({ nombre, categoria, subcategoria, descripcion: descripcion||null, precio: precio===''?null:Number(precio), disponible:true, activo:true });
+        html += `<tr><td>${i+1}</td><td>${esc(nombre)}</td><td>${esc(categoria)}</td><td>${esc(subcategoria)}</td><td>${precio?'$'+Number(precio).toLocaleString('es-AR'):'Consultar'}</td><td>✓ OK</td></tr>`;
+      }
+    });
+    html += '</tbody>';
+
+    document.getElementById('importTable').innerHTML = html;
+    document.getElementById('importInfo').innerHTML = `<b>${validos} producto${validos!==1?'s':''} listos</b> para importar${errores?` · <span style="color:var(--danger)">${errores} con error (se omiten)</span>`:''}`;
+    document.getElementById('importPreview').style.display = 'block';
+    document.getElementById('btnConfirmarImport').disabled = validos === 0;
+  };
+  reader.readAsText(file, 'UTF-8');
+}
+
+async function confirmarImport(){
+  if(!filasParaImportar.length) return;
+  const btn = document.getElementById('btnConfirmarImport');
+  btn.disabled = true;
+  btn.textContent = 'Importando...';
+
+  const { error } = await sb.from('productos').insert(filasParaImportar);
+  if(error){
+    toast('Error al importar. Revisá la consola.');
+    console.error(error);
+    btn.disabled = false;
+    btn.textContent = 'Importar productos';
+    return;
+  }
+  toast(`${filasParaImportar.length} producto${filasParaImportar.length!==1?'s':''} importados!`);
+  cerrarImportador();
   cargarProductos();
 }
 
